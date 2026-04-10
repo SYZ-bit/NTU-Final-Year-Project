@@ -1,18 +1,26 @@
-from dataclasses import dataclass
+from __future__ import annotations
+from dataclasses import dataclass, asdict
+from typing import Dict, Any
 
 
 @dataclass
 class VerifyRequest:
     subject_id: str
-    face_path: str | None = None
-    fingerprint_path: str | None = None
-    palm_path: str | None = None
+    face_path: str
+    fingerprint_path: str
+    palm_path: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
 class VerifyResponse:
     subject_id: str
-    modality_scores: dict
-    fused_score: float
+    modality_scores: Dict[str, float]
+    weighted_fusion_score: float
+    logistic_fusion_probability: float
     decision: str
-    threshold: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)

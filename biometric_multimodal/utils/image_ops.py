@@ -1,58 +1,48 @@
 from __future__ import annotations
+
+from pathlib import Path
+from typing import Tuple
 import cv2
 import numpy as np
-from pathlib import Path
-from skimage.morphology import skeletonize
 
 
-def read_image(path: str | Path, grayscale: bool = False) -> np.ndarray:
-    flag = cv2.IMREAD_GRAYSCALE if grayscale else cv2.IMREAD_COLOR
-    img = cv2.imread(str(path), flag)
+def read_bgr(path: str | Path) -> np.ndarray:
+    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is None:
         raise FileNotFoundError(f"Could not read image: {path}")
     return img
 
 
-def resize_keep(img: np.ndarray, size: int = 224) -> np.ndarray:
-    return cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
-
-
-def normalize_image(img: np.ndarray) -> np.ndarray:
-    img = img.astype(np.float32) / 255.0
+def read_gray(path: str | Path) -> np.ndarray:
+    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise FileNotFoundError(f"Could not read image: {path}")
     return img
 
 
-def bgr_to_rgb(img: np.ndarray) -> np.ndarray:
-    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+def resize_keep(img: np.ndarray, size: Tuple[int, int]) -> np.ndarray:
+    return cv2.resize(img, size, interpolation=cv2.INTER_AREA)
 
 
-def align_face_simple(img: np.ndarray, size: int = 224) -> np.ndarray:
-    # Placeholder for MTCNN / SCRFD alignment.
-    return resize_keep(img, size)
+def normalize_gray(img: np.ndarray) -> np.ndarray:
+    img = img.astype(np.float32)
+    out = np.empty_like(img)
+    cv2.normalize(img, out, 0, 255, cv2.NORM_MINMAX)
+    return out.astype(np.uint8)
 
 
-def enhance_fingerprint(img_gray: np.ndarray) -> np.ndarray:
-    img_gray = cv2.equalizeHist(img_gray)
-    img_gray = cv2.GaussianBlur(img_gray, (5, 5), 0)
-    return img_gray
-
-
-def binarize_and_skeletonize(img_gray: np.ndarray) -> np.ndarray:
-    _, binary = cv2.threshold(img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    binary = 255 - binary
-    skel = skeletonize((binary > 0).astype(np.uint8)).astype(np.uint8)
-    return skel
-
-
-def crop_center_square(img: np.ndarray) -> np.ndarray:
+def center_crop(img: np.ndarray, crop_ratio: float = 0.8) -> np.ndarray:
     h, w = img.shape[:2]
-    side = min(h, w)
-    y = (h - side) // 2
-    x = (w - side) // 2
-    return img[y:y+side, x:x+side]
+    ch, cw = int(h * crop_ratio), int(w * crop_ratio)
+    y0 = max((h - ch) // 2, 0)
+    x0 = max((w - cw) // 2, 0)
+    return img[y0:y0 + ch, x0:x0 + cw]
 
 
-def preprocess_palm(img: np.ndarray, size: int = 224) -> np.ndarray:
-    img = crop_center_square(img)
-    img = resize_keep(img, size)
-    return img
+def to_rgb(img_bgr: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+
+def clahe_gray(img_gray: np.ndarray) -> np.ndarray:
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return clahe.apply(img_gray)

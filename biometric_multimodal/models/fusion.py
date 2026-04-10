@@ -1,37 +1,37 @@
 from __future__ import annotations
+from dataclasses import dataclass
+from typing import Dict
 import numpy as np
-from joblib import dump, load
 from sklearn.linear_model import LogisticRegression
+from utils.storage import save_joblib, load_joblib
 
 
-class ScoreFusion:
-    def __init__(self, face_weight: float = 0.40, fingerprint_weight: float = 0.35, palm_weight: float = 0.25):
-        self.face_weight = face_weight
-        self.fingerprint_weight = fingerprint_weight
-        self.palm_weight = palm_weight
-        self.lr = None
+@dataclass
+class WeightedFusion:
+    weights: Dict[str, float]
 
-    def weighted_sum(self, face_score: float, fingerprint_score: float, palm_score: float) -> float:
-        return float(
-            self.face_weight * face_score +
-            self.fingerprint_weight * fingerprint_score +
-            self.palm_weight * palm_score
-        )
+    def score(self, modality_scores: Dict[str, float]) -> float:
+        total = 0.0
+        for k, w in self.weights.items():
+            total += w * float(modality_scores.get(k, 0.0))
+        return float(total)
 
-    def train_lr(self, X: np.ndarray, y: np.ndarray):
-        self.lr = LogisticRegression(max_iter=1000)
-        self.lr.fit(X, y)
-        return self
 
-    def predict_lr_score(self, face_score: float, fingerprint_score: float, palm_score: float, weighted_score: float) -> float:
-        if self.lr is None:
-            raise RuntimeError("Fusion LR model has not been trained.")
-        x = np.array([[face_score, fingerprint_score, palm_score, weighted_score]], dtype=np.float32)
-        return float(self.lr.predict_proba(x)[0, 1])
+class LogisticFusion:
+    def __init__(self):
+        self.model = LogisticRegression(max_iter=1000)
 
-    def save(self, path: str):
-        dump(self.lr, path)
+    def fit(self, X: np.ndarray, y: np.ndarray) -> None:
+        self.model.fit(X, y)
 
-    def load(self, path: str):
-        self.lr = load(path)
-        return self
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        return self.model.predict_proba(X)[:, 1]
+
+    def save(self, path: str) -> None:
+        save_joblib(self.model, path)
+
+    @classmethod
+    def load(cls, path: str) -> "LogisticFusion":
+        obj = cls()
+        obj.model = load_joblib(path)
+        return obj

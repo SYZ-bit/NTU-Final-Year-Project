@@ -1,33 +1,33 @@
 from __future__ import annotations
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from models.dataset import SubjectFolderDataset
-from utils.face_module import ResNetEmbeddingNet
+from typing import Dict
+from tqdm import tqdm
+from models.dataset import list_images_by_subject, make_verification_pairs
+from utils.face_module import FaceRecognizer
+from utils.metrics import compute_binary_metrics, far_frr
+from utils.storage import save_json
 
 
-def train_face_model(data_root: str, save_path: str, image_size: int = 224, batch_size: int = 16, epochs: int = 10, lr: float = 3e-4):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ds = SubjectFolderDataset(data_root, image_size=image_size)
-    dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0)
+def train_face_system(face_root: str = "data/face/train", threshold: float = 0.40) -> Dict:
+    recognizer = FaceRecognizer(model="hog", num_jitters=1)
+    mapping = list_images_by_subject(face_root)
+    pairs = make_verification_pairs(mapping, max_pairs_per_subject=6, max_negatives=600)
 
-    model = ResNetEmbeddingNet(embedding_dim=256).to(device)
-    clf = nn.Linear(256, len(ds.class_to_idx)).to(device)
-    params = list(model.parameters()) + list(clf.parameters())
-    opt = torch.optim.Adam(params, lr=lr)
-    loss_fn = nn.CrossEntropyLoss()
+    scores, y_true = [], []
+    for a, b, label in tqdm(pairs, desc="Face verification"):
+        try:
+            s = recognizer.pair_score(a, b)
+        except Exception:
+            s = 0.0
+        scores.append(s)
+        y_true.append(label)
 
-    model.train(); clf.train()
-    for epoch in range(epochs):
-        running = 0.0
-        for x, y in dl:
-            x, y = x.to(device), y.to(device)
-            emb = model(x)
-            logits = clf(emb)
-            loss = loss_fn(logits, y)
-            opt.zero_grad(); loss.backward(); opt.step()
-            running += loss.item()
-        print(f"[Face] epoch={epoch+1}/{epochs} loss={running/max(len(dl),1):.4f}")
+    y_pred = [1 if s >= threshold else 0 for s in scores]
+    metrics = compute_binary_metrics(y_true, y_pred)
+    metrics.update(far_frr(y_true, scores, threshold))
+    result = {"threshold": threshold, "metrics": metrics, "n_pairs": len(pairs)}
+    save_json(result, "artifacts/reports/face_metrics.json")
+    return result
 
-    torch.save(model.state_dict(), save_path)
-    print(f"Saved face model to {save_path}")
+
+if __name__ == "__main__":
+    print(train_face_system())

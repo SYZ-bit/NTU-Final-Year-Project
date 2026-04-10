@@ -1,85 +1,59 @@
 from __future__ import annotations
+
 from pathlib import Path
+from typing import Dict
 import numpy as np
-from app.config import load_settings
+import torch
+
 from utils.face_module import FaceRecognizer
-from utils.fingerprint_module import FingerprintRecognizer
-from utils.palm_module import PalmRecognizer
-from utils.storage import load_pickle
-from utils.metrics import cosine_score
-from models.fusion import ScoreFusion
+from utils.fingerprint_module import FingerprintMatcher
+from utils.palm_module import PalmCNN, PalmFeatureExtractor
+from models.fusion import WeightedFusion, LogisticFusion
+from utils.storage import load_json
 
 
-class MultiModalAuthenticator:
-    def __init__(self, settings: dict):
-        self.settings = settings
-        self.model_root = Path(settings["paths"]["model_root"])
-        self.gallery_path = Path(settings["paths"]["gallery_path"])
-        self.fusion_path = Path(settings["paths"]["fusion_model_path"])
-        device = "cuda" if False else "cpu"
+class MultiModalInference:
+    def __init__(self):
+        self.face = FaceRecognizer(model="hog", num_jitters=1)
+        self.fingerprint = FingerprintMatcher(max_keypoints=500)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.face = FaceRecognizer(device=device, use_insightface=True)
-        self.fingerprint = FingerprintRecognizer(device=device)
-        self.palm = PalmRecognizer(device=device)
+        meta = {"classes": 1}
+        if Path("artifacts/models/palm_cnn_meta.json").exists():
+            meta = load_json("artifacts/models/palm_cnn_meta.json")
+        self.palm_cnn = PalmCNN(num_classes=max(int(meta.get("classes", 1)), 1)).to(self.device)
+        if Path("artifacts/models/palm_cnn.pt").exists():
+            state = torch.load("artifacts/models/palm_cnn.pt", map_location=self.device)
+            state = {k: v for k, v in state.items() if not k.startswith("classifier.")}
+            self.palm_cnn.load_state_dict(state, strict=False)
+        self.palm_cnn.eval()
+        self.palm = PalmFeatureExtractor(self.palm_cnn, device=self.device)
 
-        face_w = self.model_root / "face_resnet50_embed.pt"
-        fp_w = self.model_root / "fingerprint_resnet18_embed.pt"
-        palm_w = self.model_root / "palm_resnet18_embed.pt"
-        if face_w.exists() and self.face.model is not None:
-            self.face.load_weights(face_w)
-        if fp_w.exists():
-            self.fingerprint.load_weights(fp_w)
-        if palm_w.exists():
-            self.palm.load_weights(palm_w)
+        self.weighted = WeightedFusion({"face": 0.34, "fingerprint": 0.33, "palm": 0.33})
+        self.logistic = LogisticFusion.load("artifacts/models/fusion_lr.joblib") if Path("artifacts/models/fusion_lr.joblib").exists() else None
 
-        self.gallery = load_pickle(self.gallery_path) if self.gallery_path.exists() else {}
-        self.fusion = ScoreFusion(
-            face_weight=settings["fusion"]["weighted_score"]["face"],
-            fingerprint_weight=settings["fusion"]["weighted_score"]["fingerprint"],
-            palm_weight=settings["fusion"]["weighted_score"]["palm"],
-        )
-        if self.fusion_path.exists():
-            self.fusion.load(self.fusion_path)
+    def verify_face_pair(self, face_a: str, face_b: str) -> float:
+        return self.face.pair_score(face_a, face_b)
 
-    def verify(self, subject_id: str, face_path: Path | None, fingerprint_path: Path | None, palm_path: Path | None) -> dict:
-        if subject_id not in self.gallery:
-            raise KeyError(f"Subject {subject_id} not found in gallery")
-        template = self.gallery[subject_id]
-        scores = {}
+    def verify_fingerprint_pair(self, fp_a: str, fp_b: str) -> float:
+        return self.fingerprint.pair_score(fp_a, fp_b)
 
-        face_score = 0.0
-        if face_path is not None:
-            probe_face = self.face.extract(face_path)
-            gallery_face = template["face_embedding"]
-            face_score = (cosine_score(probe_face, gallery_face) + 1.0) / 2.0
-            scores["face"] = float(face_score)
+    def verify_palm_pair(self, palm_a: str, palm_b: str) -> float:
+        return self.palm.pair_score(palm_a, palm_b)
 
-        fingerprint_score = 0.0
-        if fingerprint_path is not None:
-            fp_res = self.fingerprint.compare(fingerprint_path, template["fingerprint_path"])
-            fingerprint_score = fp_res["combined_score"]
-            scores["fingerprint"] = float(fingerprint_score)
-            scores["fingerprint_details"] = fp_res
-
-        palm_score = 0.0
-        if palm_path is not None:
-            palm_res = self.palm.compare(palm_path, template["palm_path"])
-            palm_score = palm_res["combined_score"]
-            scores["palm"] = float(palm_score)
-            scores["palm_details"] = palm_res
-
-        weighted_score = self.fusion.weighted_sum(face_score, fingerprint_score, palm_score)
-        fused_score = weighted_score
-        if self.fusion.lr is not None:
-            fused_score = self.fusion.predict_lr_score(face_score, fingerprint_score, palm_score, weighted_score)
-
-        threshold = float(self.settings["thresholds"]["fused"])
-        decision = "accept" if fused_score >= threshold else "reject"
+    def verify_pair(self, face_a: str, face_b: str, fp_a: str, fp_b: str, palm_a: str, palm_b: str) -> Dict[str, float]:
+        scores = {
+            "face": self.verify_face_pair(face_a, face_b),
+            "fingerprint": self.verify_fingerprint_pair(fp_a, fp_b),
+            "palm": self.verify_palm_pair(palm_a, palm_b),
+        }
+        weighted_score = self.weighted.score(scores)
+        prob = None
+        if self.logistic is not None:
+            arr = np.asarray([[scores["face"], scores["fingerprint"], scores["palm"]]], dtype=np.float32)
+            prob = float(self.logistic.predict_proba(arr)[0])
         return {
-            "subject_id": subject_id,
-            "modality_scores": scores,
-            "weighted_score": float(weighted_score),
-            "fused_score": float(fused_score),
-            "decision": decision,
-            "threshold": threshold,
+            **scores,
+            "weighted_fusion": weighted_score,
+            "logistic_fusion": prob if prob is not None else weighted_score,
         }

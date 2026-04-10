@@ -1,0 +1,10 @@
+{
+  "fusion_weighted_threshold": 0.35,
+  "fusion_train_size": 111,
+  "fusion_test_size": 48,
+  "fusion_weights": {
+    "face": 0.34,
+    "fingerprint": 0.33,
+    "palm": 0.33
+  }
+}

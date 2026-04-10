@@ -1,41 +1,67 @@
 from __future__ import annotations
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
-from app.service import AuthService
-from app.config import load_settings
+from app.service import VerificationService
 
-settings = load_settings("configs/settings.yaml")
 app = Flask(__name__)
 CORS(app)
-service = AuthService("configs/settings.yaml")
+service = VerificationService()
 
 
-@app.route("/health", methods=["GET"])
+@app.get("/health")
 def health():
     return jsonify({"status": "ok"})
 
 
-@app.route("/verify", methods=["POST"])
+@app.post("/verify")
 def verify():
     payload = request.get_json(force=True)
-    subject_id = payload.get("subject_id")
-    face_path = payload.get("face_path")
-    fingerprint_path = payload.get("fingerprint_path")
-    palm_path = payload.get("palm_path")
+    required = ["subject_id", "enrollment", "probe"]
+    for k in required:
+        if k not in payload:
+            return jsonify({"error": f"Missing field: {k}"}), 400
 
-    if not subject_id:
-        return jsonify({"error": "subject_id is required"}), 400
+    result = service.verify(
+        enrollment=payload["enrollment"],
+        probe=payload["probe"],
+        claimed_subject_id=payload["subject_id"],
+    )
+    return jsonify(result)
 
-    try:
-        result = service.verify(subject_id, face_path, fingerprint_path, palm_path)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+
+@app.post("/verify/face")
+def verify_face():
+    payload = request.get_json(force=True)
+    result = service.verify_face(
+        enrollment_path=payload["enrollment"],
+        probe_path=payload["probe"],
+        claimed_subject_id=payload.get("subject_id", "unknown"),
+    )
+    return jsonify(result)
+
+
+@app.post("/verify/fingerprint")
+def verify_fingerprint():
+    payload = request.get_json(force=True)
+    result = service.verify_fingerprint(
+        enrollment_path=payload["enrollment"],
+        probe_path=payload["probe"],
+        claimed_subject_id=payload.get("subject_id", "unknown"),
+    )
+    return jsonify(result)
+
+
+@app.post("/verify/palm")
+def verify_palm():
+    payload = request.get_json(force=True)
+    result = service.verify_palm(
+        enrollment_path=payload["enrollment"],
+        probe_path=payload["probe"],
+        claimed_subject_id=payload.get("subject_id", "unknown"),
+    )
+    return jsonify(result)
 
 
 if __name__ == "__main__":
-    app.run(host=settings["server"]["host"], port=settings["server"]["port"], debug=True)
+    app.run(host="127.0.0.1", port=5000, debug=True)
